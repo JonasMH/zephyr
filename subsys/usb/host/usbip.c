@@ -17,6 +17,11 @@
 #include <usbh_ch9.h>
 #include <usbip.h>
 
+#ifdef CONFIG_ARCH_POSIX
+#include "cmdline.h"
+#include "soc.h"
+#endif /* CONFIG_ARCH_POSIX */
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(usbip, CONFIG_USBIP_LOG_LEVEL);
 
@@ -34,6 +39,8 @@ K_THREAD_STACK_ARRAY_DEFINE(dev_thread_stacks, CONFIG_USBIP_DEVICES_COUNT,
 			    CONFIG_USBIP_THREAD_STACK_SIZE);
 
 static struct k_thread usbip_thread;
+static uint32_t usbip_service_port_arg;
+static bool usbip_service_port_arg_set;
 
 #define USBIP_DEFAULT_PATH	"/sys/bus/usb/devices/usb1/1-"
 
@@ -657,7 +664,18 @@ static void usbip_thread_handler(void *const a, void *const b, void *const c)
 	int connfd;
 	int reuse = 1;
 
-	LOG_DBG("Started connection handling thread");
+	uint16_t port = USBIP_PORT;
+
+	if (usbip_service_port_arg_set) {
+		port = (uint16_t) usbip_service_port_arg;
+	}
+
+	if (port == 0) {
+		LOG_ERR("Invalid port number 0");
+		return;
+	}
+
+	LOG_DBG("Started connection handling thread. Hosting on port %u", port);
 
 	listenfd = zsock_socket(NET_AF_INET, NET_SOCK_STREAM, NET_IPPROTO_TCP);
 	if (listenfd < 0) {
@@ -672,7 +690,7 @@ static void usbip_thread_handler(void *const a, void *const b, void *const c)
 
 	srv.sin_family = NET_AF_INET;
 	srv.sin_addr.s_addr = net_htonl(NET_INADDR_ANY);
-	srv.sin_port = net_htons(USBIP_PORT);
+	srv.sin_port = net_htons(port);
 
 	if (zsock_bind(listenfd, (struct net_sockaddr *)&srv, sizeof(srv)) < 0) {
 		LOG_ERR("bind() failed: %s", strerror(errno));
@@ -759,3 +777,33 @@ static int usbip_init(void)
 }
 
 SYS_INIT(usbip_init, APPLICATION, CONFIG_KERNEL_INIT_PRIORITY_DEVICE);
+
+#ifdef CONFIG_ARCH_POSIX
+
+static void usbip_service_port_arg_was_set(char *argv, int offset)
+{
+	ARG_UNUSED(argv);
+	ARG_UNUSED(offset);
+	usbip_service_port_arg_set = true;
+}
+
+
+static void add_usbip_arg(void)
+{
+	static struct args_struct_t usbip_args[] = {
+		{.option = "usbip_service_port",
+		 .name = "port",
+		 .type = 'u',
+		 .dest = (void *)&usbip_service_port_arg,
+		 .call_when_found = usbip_service_port_arg_was_set,
+		 .descript = "Port number for the USBIP service, by default "
+			     "\"" STRINGIFY(USBIP_PORT) "\""},
+		ARG_TABLE_ENDMARKER
+	};
+
+	native_add_command_line_opts(usbip_args);
+}
+
+NATIVE_TASK(add_usbip_arg, PRE_BOOT_1, 10);
+
+#endif /* CONFIG_ARCH_POSIX */
